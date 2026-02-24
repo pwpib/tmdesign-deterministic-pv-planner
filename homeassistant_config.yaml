@@ -1,0 +1,184 @@
+# ============================================================================
+# PV PLANNER - Home Assistant Configuration
+# Umieść tę zawartość w configuration.yaml lub zaimportuj za pomocą:
+#   !include apps/pv_planner/homeassistant_config.yaml
+# ============================================================================
+
+# ==========================================================
+# INPUT NUMBER - Wartości tekstowe do edycji
+# ==========================================================
+
+input_number:
+  # ========== WSPÓŁCZYNNIKI PV ==========
+  pv_planner_pv_before_13_ratio:
+    name: "PV Planner: Udział energii PV przed 13:00"
+    unit_of_measurement: "%"
+    icon: mdi:percent
+    min: 30
+    max: 70
+    step: 5
+    description: "Procent energii PV przypadającej na przedział 0–13h (domyślnie 60%)"
+
+  pv_planner_pv_after_13_ratio:
+    name: "PV Planner: Udział energii PV po 13:00"
+    unit_of_measurement: "%"
+    icon: mdi:percent
+    min: 30
+    max: 70
+    step: 5
+    description: "Procent energii PV przypadającej na przedział 13–24h (domyślnie 40%)"
+
+  # ========== OFFSETY CZASOWE SŁOŃCA ==========
+  pv_planner_pv_dawn_offset_min:
+    name: "PV Planner: Offset wschodu słońca"
+    unit_of_measurement: "min"
+    icon: mdi:sun-clock
+    min: 0
+    max: 120
+    step: 5
+    description: "Minut po wschodzie słońca, gdy zaczyna się produkcja PV (domyślnie 45 min)"
+
+  pv_planner_pv_dusk_offset_min:
+    name: "PV Planner: Offset zachodu słońca"
+    unit_of_measurement: "min"
+    icon: mdi:sun-clock
+    min: 0
+    max: 120
+    step: 5
+    description: "Minut przed zachodem słońca, gdy kończy się produkcja PV (domyślnie 30 min)"
+
+  # ========== ZUŻYCIE DOMU ==========
+  pv_planner_house_load_night:
+    name: "PV Planner: Zużycie domu - noc (0–6h)"
+    unit_of_measurement: "kW"
+    icon: mdi:home-energy-meter
+    min: 0.0
+    max: 5.0
+    step: 0.1
+    description: "Zużycie domu w nocy (godziny 0–6)"
+
+  pv_planner_house_load_morning_day:
+    name: "PV Planner: Zużycie domu - dzień (6–15h)"
+    unit_of_measurement: "kW"
+    icon: mdi:home-energy-meter
+    min: 0.0
+    max: 5.0
+    step: 0.1
+    description: "Zużycie domu w dzień (godziny 6–15)"
+
+  pv_planner_house_load_evening:
+    name: "PV Planner: Zużycie domu - wieczór (15–20h)"
+    unit_of_measurement: "kW"
+    icon: mdi:home-energy-meter
+    min: 0.0
+    max: 5.0
+    step: 0.1
+    description: "Zużycie domu wieczorem (godziny 15–20)"
+
+  pv_planner_house_load_night_late:
+    name: "PV Planner: Zużycie domu - późna noc (20–24h)"
+    unit_of_measurement: "kW"
+    icon: mdi:home-energy-meter
+    min: 0.0
+    max: 5.0
+    step: 0.1
+    description: "Zużycie domu w późną noc (godziny 20–24)"
+
+  # ========== MOC POMPY CIEPŁA W ZALEŻNOŚCI OD TEMPERATURY ==========
+  pv_planner_heat_pump_power_at_plus_15:
+    name: "PV Planner: Moc pompy ciepła @ +15°C"
+    unit_of_measurement: "kW"
+    icon: mdi:thermometer-plus
+    min: 0.0
+    max: 4.0
+    step: 0.1
+    description: "Moc pompy ciepła przy temperaturze +15°C (domyślnie 1.0 kW)"
+
+  pv_planner_heat_pump_power_at_plus_10:
+    name: "PV Planner: Moc pompy ciepła @ +10°C"
+    unit_of_measurement: "kW"
+    icon: mdi:thermometer-plus
+    min: 0.0
+    max: 4.0
+    step: 0.1
+    description: "Moc pompy ciepła przy temperaturze +10°C (domyślnie 1.0 kW)"
+
+  pv_planner_heat_pump_power_at_plus_5:
+    name: "PV Planner: Moc pompy ciepła @ +5°C"
+    unit_of_measurement: "kW"
+    icon: mdi:thermometer-plus
+    min: 0.0
+    max: 4.0
+    step: 0.1
+    description: "Moc pompy ciepła przy temperaturze +5°C (domyślnie 1.0 kW)"
+
+  pv_planner_heat_pump_power_at_0:
+    name: "PV Planner: Moc pompy ciepła @ 0°C"
+    unit_of_measurement: "kW"
+    icon: mdi:thermometer
+    min: 0.0
+    max: 4.0
+    step: 0.1
+    description: "Moc pompy ciepła przy temperaturze 0°C (domyślnie 1.0 kW)"
+
+  pv_planner_heat_pump_power_at_minus_5:
+    name: "PV Planner: Moc pompy ciepła @ -5°C"
+    unit_of_measurement: "kW"
+    icon: mdi:thermometer-minus
+    min: 0.0
+    max: 4.0
+    step: 0.1
+    description: "Moc pompy ciepła przy temperaturze -5°C (domyślnie 1.0 kW)"
+
+  pv_planner_heat_pump_power_at_minus_10:
+    name: "PV Planner: Moc pompy ciepła @ -10°C"
+    unit_of_measurement: "kW"
+    icon: mdi:thermometer-minus
+    min: 0.0
+    max: 4.0
+    step: 0.1
+    description: "Moc pompy ciepła przy temperaturze -10°C (domyślnie 1.0 kW)"
+
+input_text:
+  pv_planner_program_3_earliest_time:
+    name: "PV Planner: Program 3 - czas włączenia"
+    icon: mdi:clock
+    description: "Format: HH:MM (np. 06:05)"
+
+  pv_planner_program_6_earliest_time:
+    name: "PV Planner: Program 6 - czas włączenia"
+    icon: mdi:clock
+    description: "Format: HH:MM (np. 15:05)"
+
+# ==========================================================
+# INPUT SELECT - Wybory dla taryf prądowych
+# ==========================================================
+
+input_select:
+  pv_planner_cheap_tariff_windows:
+    name: "PV Planner: Okna tanich taryf"
+    icon: mdi:calendar-clock
+    options:
+      - "Noc (22-6h) + Midday (13-15h)"
+      - "Noc (22-6h) + Popołudnie (14-16h)"
+      - "Noc (23-6h)"
+    description: "Okresy taniej taryfy dla ładowania baterii"
+
+  pv_planner_heat_pump_consumption_model:
+    name: "PV Planner: Model konsumpcji pompy ciepła"
+    icon: mdi:heat-pump
+    options:
+      - "Standard"
+      - "Premium"
+      - "Eco"
+    description: "Model działania pompy ciepła (wpływa na moc poboru)"
+
+# ==========================================================
+# INPUT BOOLEAN - Przełączniki
+# ==========================================================
+
+input_boolean:
+  pv_planner_heating_season_active:
+    name: "PV Planner: Sezon grzewczy aktywny"
+    icon: mdi:snowflake-thermometer
+    description: "Czy jest sezon grzewczy (włącza sterowanie grzewaniem)"

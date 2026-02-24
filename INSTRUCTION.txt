@@ -1,0 +1,438 @@
+================================================================================
+PV PLANNER - INSTRUKCJA OBSŁUGI I INTEGRACJI
+================================================================================
+
+Data: 20.02.2026
+Wersja: 2.0 (po naprawach Phase 1 i Phase 2)
+
+================================================================================
+SPIS TREŚCI
+================================================================================
+
+1. Przegląd systemu
+2. Struktura plików
+3. Parametry konfiguracji
+4. Instalacja w Home Assistant
+5. Integracja AppDaemon z HA
+6. Testowanie
+7. Troubleshooting
+8. FAQ
+
+================================================================================
+1. PRZEGLĄD SYSTEMU
+================================================================================
+
+PV Planner to system optymalizacji zarządzania baterią magazynu energii dla
+instalacji fotowoltaiki z pompą ciepła.
+
+PRZEPŁYW DZIAŁANIA:
+  Dzisiaj (D):
+    ├─ initialize() - wczytaj plan na D i D+1
+    ├─ trigger - oblicz plan na D+1
+    └─ 22:00 - _start_executor()
+  
+  Jutro (D+1):
+    ├─ 22:00 - Wysyłanie programów do falownika
+    └─ Sterowanie baterią przez całą noc/dzień
+
+ETAPY PRACY:
+  1. SNAPSHOT - odczyt ~30 encji z HA (pogoda, bateria, PV, pompa ciepła)
+  2. PLANNER CORE - symulacja 24h, obliczenie SOC_06 i SOC_13
+  3. PLAN STORE - zapis do SQLite
+  4. EXECUTOR - wysyłka programów do falownika
+
+================================================================================
+2. STRUKTURA PLIKÓW
+================================================================================
+
+apps/pv_planner/
+├── __init__.py                    # Pusty (package marker)
+├── config.py                      # GŁÓWNA KONFIGURACJA (wszystkie parametry)
+├── pv_planner_app.py              # Orkiestracja (AppDaemon)
+├── planner_core.py                # Logika obliczeniowa
+├── plan_reader.py                 # Odczyt planów z bazy
+├── plan_store.py                  # Zapis planów do bazy
+├── planner_executor.py            # Decyzje logiczne
+├── inverter_writer.py             # Zapis do falownika (stub)
+├── snapshot.py                    # Odczyt snapshotu z HA
+├── ha_sync.py                     # [NOWY] Synchronizacja parametrów z HA
+├── homeassistant_config.yaml      # [NOWY] Encje dla HA
+├── data/
+│   ├── snapshots.db               # Baza snapshotu
+│   └── plans.db                   # Baza planów
+├── HOMEASSISTANT_SETUP.md         # [NOWY] Instrukcja HA
+├── HA_INTEGRATION.md              # [NOWY] Instrukcja integracji
+└── INSTRUCTION.txt                # [NOWY] Ten plik
+
+================================================================================
+3. PARAMETRY KONFIGURACJI
+================================================================================
+
+Wszystkie parametry znajdują się w config.py
+
+WSPÓŁCZYNNIKI PV:
+  PV_BEFORE_13_RATIO = 0.60       # 60% energii PV przed 13:00 (domyślnie)
+  PV_AFTER_13_RATIO = 0.40        # 40% energii PV po 13:00 (domyślnie)
+
+OFFSETY CZASOWE SŁOŃCA:
+  PV_DAWN_OFFSET_MIN = 45         # Start produkcji: wschód + 45 min
+  PV_DUSK_OFFSET_MIN = 30         # Koniec produkcji: zachód - 30 min
+
+LIMITY CZASOWE PROGRAMÓW:
+  PROGRAM_3_EARLIEST_HOUR = 6     # Program 3 najwcześniej o 6:05
+  PROGRAM_3_EARLIEST_MIN = 5      # (parsowane z input_text.pv_planner_program_3_earliest_time)
+  PROGRAM_6_EARLIEST_HOUR = 15    # Program 6 najwcześniej o 15:05
+  PROGRAM_6_EARLIEST_MIN = 5      # (parsowane z input_text.pv_planner_program_6_earliest_time)
+
+PROFILE ZUŻYCIA DOMU:
+  HOUSE_LOAD_PROFILE = {
+    "night": 0.4,                 # 0-6h: 0.4 kW
+    "morning_day": 0.6,           # 6-15h: 0.6 kW
+    "evening": 1.6,               # 15-20h: 1.6 kW
+    "night_late": 1.0             # 20-24h: 1.0 kW
+  }
+
+TARYFY PRĄDOWE:
+  CHEAP_TARIFF_WINDOWS = [
+    (22, 6),                       # 22:00-06:00 (noc)
+    (13, 15)                       # 13:00-15:00 (midday)
+  ]
+
+MOC POMPY CIEPŁA (w zależności od temperatury):
+  HEAT_PUMP_POWER_AT_PLUS_15 = 1.0   # 1.0 kW @ +15°C
+  HEAT_PUMP_POWER_AT_PLUS_10 = 1.0   # 1.0 kW @ +10°C
+  HEAT_PUMP_POWER_AT_PLUS_5 = 1.0    # 1.0 kW @ +5°C
+  HEAT_PUMP_POWER_AT_0 = 1.0         # 1.0 kW @ 0°C
+  HEAT_PUMP_POWER_AT_MINUS_5 = 1.0   # 1.0 kW @ -5°C
+  HEAT_PUMP_POWER_AT_MINUS_10 = 1.0  # 1.0 kW @ -10°C
+  HEAT_PUMP_CONSUMPTION_MODEL = "Standard"  # Standard / Premium / Eco
+  HEATING_SEASON_ACTIVE = True       # Czy sezon grzewczy jest aktywny
+
+FUNKCJE HELPER:
+  get_house_load(hour)            # Zwraca zużycie dla danej godziny
+  is_cheap_tariff(hour)           # Sprawdza czy godzina jest w taniej taryfie
+
+================================================================================
+4. INSTALACJA W HOME ASSISTANT
+================================================================================
+
+KROK 1: Dodaj encje do Home Assistant
+----------------------------------------
+
+SPOSOB A: Automatycznie (REKOMENDOWANY)
+
+Skopiuj zawartość apps/pv_planner/homeassistant_config.yaml i wklej do configuration.yaml:
+
+!include apps/pv_planner/homeassistant_config.yaml
+
+LUB dodaj bezpośrednio zawartość pliku.
+
+SPOSÓB B: Ręczny przegląd elementów
+
+Powinna zawierać:
+  ✓ 12 encji input_number (PV ratios, offsets, house load, heat pump power)
+  ✓ 2 encje input_text (program 3/6 time w formacie HH:MM)
+  ✓ 2 encje input_select (tariff windows, heat pump model)
+  ✓ 1 encja input_boolean (heating season active)
+  ✓ 1 template sensor (wyświetlanie parametrów)
+  ✓ 1 automation (trigger do AppDaemon)
+
+KROK 2: Restart Home Assistant
+---------------------------------------
+
+Developer Tools → YAML → Restart Home Assistant
+
+Lub w terminalu:
+  docker restart homeassistant
+
+KROK 3: Zweryfikuj encje w HA
+---------------------------------------
+
+Settings → Devices & Services → Helpers
+
+Powinieneś zobaczyć (z prefixem "pv_planner_"):
+  ✓ input_number: pv_before_13_ratio, pv_after_13_ratio, pv_dawn_offset_min,
+    pv_dusk_offset_min, house_load_night/morning_day/evening/night_late,
+    heat_pump_power_at_plus_15/plus_10/plus_5/0/minus_5/minus_10
+  ✓ input_text: program_3_earliest_time, program_6_earliest_time
+  ✓ input_select: cheap_tariff_windows, heat_pump_consumption_model
+  ✓ input_boolean: heating_season_active
+
+================================================================================
+5. INTEGRACJA APPDAEMON Z HA
+================================================================================
+
+STANUS: Już zintegrowani!
+
+Plik pv_planner_app.py zawiera:
+  ✓ Import: from .ha_sync import ConfigSync
+  ✓ Inicjalizacja: self.config_sync = ConfigSync(self)
+  ✓ Wczytanie: self.config_sync.load_all_from_ha()
+
+Plik ha_sync.py zawiera:
+  ✓ Nasłuchiwanie zmian wszystkich encji
+  ✓ Callbacki: _on_*_change() dla każdej grupy parametrów
+  ✓ Automatyczna synchronizacja bez Need for restart
+
+KROK 1: Czekaj na restart AppDaemon
+---------------------------------------
+
+Po dodaniu encji w HA, AppDaemon automatycznie:
+  1. Załaduje wszystkie parametry
+  2. Zarejestruje listen_state callbacki
+  3. Będzie nasłuchiwać zmian
+
+KROK 2: Sprawdź logi AppDaemon
+---------------------------------------
+
+Powinny zawierać:
+  PV PLANNER ▶ Synchronizacja parametrów HA włączona
+  PV PLANNER ▶ Wszystkie parametry załadowane z HA
+  PV PLANNER ▶ Współczynniki PV: 0.60/0.40
+
+================================================================================
+6. TESTOWANIE
+================================================================================
+
+TEST 1: Encje w HA
+-----------
+
+1. Przejdź do Settings → Devices & Services → Helpers
+2. Zmień wartość suwaka:
+   
+   input_number.pv_planner_pv_before_13_ratio → 65%
+
+3. Sprawdź logi AppDaemon - powinna być linijka:
+
+   PV PLANNER ▶ Współczynniki PV: 0.65/0.35
+
+TEST 2: Synchronizacja wszystkich parametrów
+-----------
+
+Zmień kilka wartości w HA:
+
+  input_number.pv_planner_pv_before_13_ratio = 65%
+  input_number.pv_planner_house_load_evening = 2.0 kW
+  input_text.pv_planner_program_3_earliest_time = "07:10" (format HH:MM)
+  input_select.pv_planner_cheap_tariff_windows = "Noc (22-6h) + Popołudnie (14-16h)"
+  input_number.pv_planner_heat_pump_power_at_plus_10 = 1.5 kW
+
+Sprawdź logi AppDaemon - każdy parametr powinien być zsynchronizowany:
+
+  PV PLANNER ▶ Współczynniki PV: 0.65/0.35
+  PV PLANNER ▶ Limity programów: P3=07:10, P6=...
+  PV PLANNER ▶ Profile domu: noc=..., dzień=..., wieczór=2.0kW, ...
+  PV PLANNER ▶ Pompa ciepła: +15°C=1.0kW, +10°C=1.5kW, ...
+
+TEST 3: Restart AppDaemon
+-----------
+
+Restart AppDaemon i sprawdź, czy:
+
+  1. Aplikacja się uruchomiła
+  2. Parametry zostały wczytane z HA
+  3. Plan na dzisiaj/jutro jest obliczany
+
+TEST 4: Obliczenie planu
+-----------
+
+1. W HA włącz trigger:
+   
+   input_boolean.pv_planner_test_trigger → ON
+
+2. Sprawdź logi - powinien być plan na D+1:
+
+   PV PLANNER ▶ plan na jutro: ZNALEZIONY
+   PV PLANNER ▶ plan obliczony (D+1)
+
+3. Sprawdzaj, czy współczynniki PV są używane:
+
+   DEBUG dawn raw: 2026-02-21T06:30:00
+   DEBUG dusk raw: 2026-02-21T17:45:00
+   PV forecast: 15.50 kWh
+   SOC_06 target: 75%
+   SOC_13 target: 85%
+
+================================================================================
+7. TROUBLESHOOTING
+================================================================================
+
+PROBLEM: Encje się nie pojawiają w HA
+------
+
+Rozwiązanie:
+
+  1. Sprawdź logi HA (Settings → System → Administration → Logs)
+  2. Przeładuj yaml: Developer Tools → YAML → Reload Helpers
+  3. Restart HA: Developer Tools → YAML → Restart Home Assistant
+  4. Czekaj 30 sekund
+  5. Sprawdzaj Settings → Devices & Services → Helpers
+
+
+PROBLEM: Zmiany w HA nie są synchronizowane do AppDaemon
+------
+
+Sprawdź:
+
+  1. Czy plik ha_sync.py istnieje w apps/pv_planner/?
+  2. Czy jest import w pv_planner_app.py?
+  3. Czy AppDaemon wczytał ConfigSync()?
+  4. Sprawdź logi AppDaemon: czy są błędy?
+
+Jeśli zaś są błędy importu:
+
+  - Upewnij się, że __init__.py istnieje w apps/pv_planner/
+  - Sprawdź ścieżkę relativnego importu: "from .ha_sync import ConfigSync"
+
+
+PROBLEM: Błąd "No such file or directory: config.py"
+------
+
+Rozwiązanie:
+
+  1. Sprawdź, czy config.py jest w apps/pv_planner/
+  2. Czekaj 30 sekund po dodaniu pliku
+  3. Reload AppDaemon
+
+
+PROBLEM: Współczynniki się nie zmieniają w planie
+------
+
+Sprawdź:
+
+  1. Czy zmiana jest w logatach AppDaemon?
+  2. Czy następny plan jest obliczany PO zmianie?
+  3. Czy baza danych (plans.db) zawiera nowy plan?
+
+Aby wymusić obliczenie nowego planu:
+
+  - Włącz trigger: input_boolean.pv_planner_test_trigger → ON
+
+
+PROBLEM: AppDaemon się restartuje od razu po starcie
+------
+
+Przyczyny:
+
+  1. Błąd importu ha_sync - sprawdź logi
+  2. Brakujący __init__.py
+  3. Błąd składni w pv_planner_app.py
+
+Rozwiązanie:
+
+  docker logs appdaemon -f
+
+================================================================================
+8. FAQ
+================================================================================
+
+P: Czy muszę edytować config.py, aby zmienić parametry?
+O: Nie! Wszystkie parametry są dostępne w HA. Edytuj suwaki w Settings.
+
+P: Co się stanie, jeśli zmienię współczynnik PV w trakcie dnia?
+O: Następny plan (D+1) będzie obliczony z nowym współczynnikiem automatycznie.
+
+P: Czy mogę zmienić taryfy prądowe na locie?
+O: Tak, ale tylko dla następnego planu. Bieżący plan już został wysłany.
+
+P: Co to SOC_06 i SOC_13?
+O: Docelowy poziom baterii o godzinie 6:00 i 13:00, obliczony symulacją 24h.
+
+P: Dlaczego współczynniki to 0.60/0.40?
+O: Doświadczalne wartości - rano jest więcej chmur, popołudnie czystsze.
+
+P: Czy mogę konfigurować APP bez Home Assistant?
+O: Tak, edytując bezpośrednio config.py (ale bez synchronizacji w realtime).
+
+P: Co to pMP (pompa ciepła)?
+O: System grzewczy, którego moc zależy od temperatury zewnętrznej.
+
+P: Jak długo trwa obliczenie planu?
+O: ~1-2 sekundy (symulacja 24h + walidacja SOC).
+
+P: Como zmienić czasy programów 3 i 6?
+O: Użyj encji input_text w formacie HH:MM (np. "06:05").
+   input_text.pv_planner_program_3_earliest_time i program_6_earliest_time
+
+P: Czy mogę zmienić moc pompy na rozne temperatury niezależnie?
+O: Tak! Każda temperatura ma oddzielny suwak input_number.
+   pv_planner_heat_pump_power_at_plus_15/plus_10/plus_5/0/minus_5/minus_10
+
+P: Co się stanie gdy zmienię sezon grzewczy na OFF?
+O: config.HEATING_SEASON_ACTIVE = False. Sterowanie grzewaniem jest wyłączone.
+
+================================================================================
+PODSUMOWANIE
+================================================================================
+
+✓ Wszystkie parametry są w config.py
+✓ Dostęp do parametrów z Home Assistant
+✓ Synchronizacja w realtime (bez restartu)
+✓ Funkcje helper dla logiki biznesowej
+✓ Dokumentacja w HOMEASSISTANT_SETUP.md i HA_INTEGRATION.md
+
+NASTĘPNE KROKI:
+
+1. Zainstaluj parametry w HA (sekcja 4)
+2. Integruj AppDaemon z HA (sekcja 5)
+3. Testuj (sekcja 6)
+4. Dostosuj parametry do своего domu (zużycie, taryfy, offsety)
+
+Powodzenia! 🚀
+================================================================================
+PODSUMOWANIE - STRUKTURA PLIKU
+================================================================================
+
+apps/pv_planner/:
+  ✓ config.py                      - Parametry (edytuj tu lub przez HA)
+  ✓ ha_sync.py                     - Synchronizacja real-time z HA
+  ✓ homeassistant_config.yaml      - Definicje encji HA
+  ✓ pv_planner_app.py              - Główna aplikacja
+  ✓ planner_core.py                - Logika obliczeniowa
+  ✓ snapshot.py, plan_store.py, etc. - Pozostałe moduły
+
+================================================================================
+STATUS - Co jest już gotowe
+================================================================================
+
+✓ INSTALACJA W HA:
+  - Wszystkie encje zdefiniowane w homeassistant_config.yaml
+  - Ujednolicony prefiks "PV Planner:" dla łatwego filtrowania
+  - Łatwe do załadowania: !include apps/pv_planner/homeassistant_config.yaml
+
+✓ INTEGRACJA APPDAEMON:
+  - ConfigSync część ha_sync.py już zawarta
+  - pv_planner_app.py już zainicjalizowany
+  - Parametry synchronizowane w realtime bez restarta
+
+✓ PARAMETRY:
+  - PV ratios (przed/po 13:00) - obliczone dla optymalnego rozkładu
+  - Offsety słońca (dawn/dusk) - bezpieczność
+  - Limity czasowe programów - format HH:MM (elastyczny)
+  - Profile domu (noc/dzień/wieczór/późna noc) - strojona dla domu
+  - Moc pompy ciepła (6 temperatur) - gotowa do rzeczywistych pomiarów
+  - Taryfy tanich okien - możliwość wyboru
+  - Model pompy (Standard/Premium/Eco) - dla przyszłego dostrojenia
+
+================================================================================
+NASTĘPNIE KROKI
+================================================================================
+
+1. ✅ Dodaj encje do configuration.yaml (sekcja 4)
+2. ✅ Zweryfikuj encje w HA
+3. ✅ Restart Home Assistant
+4. ✅ Czekaj na auto-reload AppDaemon (lub zrestartuj manualnie)
+5. ✅ Testuj - zmień parametry w HA i sprawdź logi
+6. ✅ Dostosuj wartości do swojego domu (zaczyna się od domyślnych)
+7. ✅ Obserwuj plany obliczane każdego dnia
+
+================================================================================
+► WSKAZÓWKA: Jeśli coś nie działa:
+  1. Sprawdź logi AppDaemon: docker logs appdaemon -f
+  2. Sprawdź logi HA: Settings → System → Logs
+  3. Przeładuj YAML: Developer Tools → YAML → Reload Helpers
+  4. Restart Home Assistant w ostateczności
+
+================================================================================
+Powodzenia! 🚀
+================================================================================

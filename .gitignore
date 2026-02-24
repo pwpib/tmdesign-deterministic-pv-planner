@@ -1,0 +1,13 @@
+# Bazy danych runtime
+data/*.db
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logi
+*.log
+
+# System
+.DS_Store
+Thumbs.db
