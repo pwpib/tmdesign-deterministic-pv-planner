@@ -1,4 +1,4 @@
-import time as pytime
+﻿import time as pytime
 
 import logging
 from datetime import datetime, timedelta, date, time
@@ -6,11 +6,18 @@ import appdaemon.plugins.hass.hassapi as hass
 
 from pv_planner.snapshot import SnapshotReader
 import pv_planner.planner_core as planner_core
-from .plan_store import save_plan, mark_plan_executed
+from .plan_store import (
+    save_plan,
+    mark_plan_executed,
+    save_plan_validation,
+    get_learning_state,
+    set_learning_state,
+)
 from .plan_reader import load_plan_for_today, load_plan_for_tomorrow, is_plan_executed
 from .planner_executor import decide_execution
 from .planner_executor import map_decision_to_action
 from .ha_sync import ConfigSync
+from . import config
 
 
 log = logging.getLogger(__name__)
@@ -22,6 +29,9 @@ class PVPlanner(hass.Hass):
         # ===== SYNCHRONIZACJA PARAMETRÓW Z HA =====
         self.config_sync = ConfigSync(self)
         self.config_sync.load_all_from_ha()
+        current_bias = get_learning_state("soc_target_bias", 0.0)
+        config.LEARNING_SOC_TARGET_BIAS = current_bias
+        self.log(f"PV LEARNING zaladowany bias SOC: {current_bias:+.2f} pp")
         
         # ===== RESZTA APLIKACJI =====
         plan_today = load_plan_for_today()
@@ -44,7 +54,7 @@ class PVPlanner(hass.Hass):
             inverter_payload = {
                 "plan_date": plan_today.get("plan_date"),
                 "grid_allowed": action.get("grid_allowed"),
-                "target_soc": action.get("target_soc"),
+                "target_soc": action.get("target_soc_percent"),
                 "night_charge_kwh": plan_today.get("night_charge_kwh"),
                 "midday_charge_kwh": plan_today.get("midday_charge_kwh"),
                 "reason": action.get("reason")
@@ -94,6 +104,7 @@ class PVPlanner(hass.Hass):
                 "/config/apps/pv_planner/data/snapshots.db"
             )
             raw = reader.read_snapshot()
+            self._validate_today_plan_and_update_learning(raw)
 
             # ===== NORMALIZACJA SNAPSHOTU (INTERFEJS) =====
             snapshot = {
@@ -116,15 +127,25 @@ class PVPlanner(hass.Hass):
                 "summer_season_active": raw["summer_season_active"],
 
                 # model pompy
-                #"heat_pump_model": raw["heat_pump_model"],
-                #"heat_pump_power_at_plus_5": raw["hp_power_plus_5"],
-                #"heat_pump_power_at_0": raw["hp_power_0"],
-                #"heat_pump_power_at_minus_5": raw["hp_power_minus_5"],
-                #"heat_pump_power_at_minus_10": raw["hp_power_minus_10"],
+                "heat_pump_model": raw["heat_pump_model"],
+                "heat_pump_power_at_plus_15": raw["hp_power_plus_15"],
+                "heat_pump_power_at_plus_10": raw["hp_power_plus_10"],
+                "heat_pump_power_at_plus_5": raw["hp_power_plus_5"],
+                "heat_pump_power_at_0": raw["hp_power_0"],
+                "heat_pump_power_at_minus_5": raw["hp_power_minus_5"],
+                "heat_pump_power_at_minus_10": raw["hp_power_minus_10"],
 
                 # podział energii
-                #"energy_share_before_13": raw["energy_share_before_13"],
-                #"energy_share_after_13": raw["energy_share_after_13"],
+                "energy_share_before_13": (
+                    float(raw["energy_share_before_13"]) / 100.0
+                    if raw.get("energy_share_before_13") is not None
+                    else None
+                ),
+                "energy_share_after_13": (
+                    float(raw["energy_share_after_13"]) / 100.0
+                    if raw.get("energy_share_after_13") is not None
+                    else None
+                ),
 
                 # bateria
                 "battery_soc_now": float(self.get_state("sensor.inverter_battery")),
@@ -155,6 +176,56 @@ class PVPlanner(hass.Hass):
                 "input_boolean/turn_off",
                 entity_id="input_boolean.pv_planner_test_trigger"
             )
+
+    def _validate_today_plan_and_update_learning(self, raw: dict):
+        """
+        Waliduje plan na DZISIAJ (D) na podstawie bieżących pomiarów i
+        aktualizuje prosty parametr uczenia: bias celu SOC.
+        """
+        today_wrapper = load_plan_for_today()
+        if not today_wrapper:
+            self.log("PV LEARNING brak planu na dzis - walidacja pominięta")
+            return
+
+        plan = today_wrapper.get("plan", {})
+        if not isinstance(plan, dict):
+            self.log("PV LEARNING niepoprawna struktura planu - walidacja pominięta", level="WARNING")
+            return
+
+        target_soc = plan.get("target_soc_percent")
+        actual_soc = raw.get("soc_current_percent")
+        grid_import_today = raw.get("grid_import_today_kwh")
+        grid_export_today = raw.get("grid_export_today_kwh")
+
+        if target_soc is None or actual_soc is None:
+            self.log("PV LEARNING brak target/actual SOC - walidacja pominięta", level="WARNING")
+            return
+
+        soc_error = float(actual_soc) - float(target_soc)
+        plan_date = date.today().isoformat()
+
+        validation_payload = {
+            "plan_date": plan_date,
+            "target_soc_percent": float(target_soc),
+            "actual_soc_percent": float(actual_soc),
+            "soc_error_percent_points": soc_error,
+            "grid_import_today_kwh": grid_import_today,
+            "grid_export_today_kwh": grid_export_today,
+        }
+        save_plan_validation(plan_date, validation_payload)
+
+        old_bias = get_learning_state("soc_target_bias", 0.0)
+        learning_rate = 0.20
+        new_bias = old_bias + (-soc_error * learning_rate)
+        new_bias = max(-15.0, min(15.0, new_bias))
+
+        set_learning_state("soc_target_bias", new_bias)
+        config.LEARNING_SOC_TARGET_BIAS = new_bias
+
+        self.log(
+            f"PV LEARNING walidacja D: target={target_soc:.1f} actual={actual_soc:.1f} "
+            f"error={soc_error:+.2f}pp bias: {old_bias:+.2f} -> {new_bias:+.2f}"
+        )
 
     # ==========================================================
     # AUTO PLAN 21:50
@@ -210,7 +281,8 @@ class PVPlanner(hass.Hass):
             return
 
         try:
-            self._send_programs_to_inverter(plan, inputs)
+            self._validate_plan_before_inverter_send(plan, inputs)
+            self._send_programs_to_inverter(plan)
 
             tomorrow = date.fromordinal(date.today().toordinal() + 1).isoformat()
             mark_plan_executed(tomorrow)
@@ -221,18 +293,82 @@ class PVPlanner(hass.Hass):
             self.log(f"PV EXECUTOR Blad wysylki: {e} retry za 5 min", level="ERROR")
             self.run_in(self._try_execute_plan, 300)
 
-            self.log("PV EXECUTOR Plan wyslany poprawnie")
-
-        except Exception as e:
-            self.log(f"PV EXECUTOR Blad wysylki: {e} retry za 5 min", level="ERROR")
-            self.run_in(self._try_execute_plan, 300)
-
 
     # ==========================================================
     # WYSYŁKA PROGRAMÓW
     # ==========================================================
 
-    def _send_programs_to_inverter(self, plan, inputs):
+    def _validate_plan_before_inverter_send(self, plan: dict, inputs: dict) -> None:
+        required_keys = {"programs", "pv_start_time", "pv_end_time"}
+        missing = [k for k in required_keys if k not in plan]
+        if missing:
+            raise ValueError(f"Brak wymaganych pol planu: {missing}")
+
+        programs = plan.get("programs")
+        if not isinstance(programs, list) or len(programs) != 6:
+            raise ValueError(f"Niepoprawna lista programow: oczekiwano 6, otrzymano {len(programs) if isinstance(programs, list) else 'nie-lista'}")
+
+        season = str(plan.get("season", "")).lower()
+        soc_max_cfg = inputs.get("battery_soc_max")
+        soc_min_winter_cfg = inputs.get("battery_soc_min_winter")
+        soc_min_summer_cfg = inputs.get("battery_soc_min_summer")
+
+        if soc_max_cfg is None:
+            raise ValueError("Brak battery_soc_max w inputs planu")
+        soc_max = int(float(soc_max_cfg))
+        if soc_max <= 0 or soc_max > 100:
+            raise ValueError(f"Niepoprawny battery_soc_max: {soc_max}")
+
+        if season == "winter":
+            if soc_min_winter_cfg is None:
+                raise ValueError("Brak battery_soc_min_winter w inputs planu")
+            soc_min = int(float(soc_min_winter_cfg))
+        else:
+            if soc_min_summer_cfg is None:
+                raise ValueError("Brak battery_soc_min_summer w inputs planu")
+            soc_min = int(float(soc_min_summer_cfg))
+
+        if soc_min <= 0:
+            raise ValueError(f"Niepoprawny minimalny SOC dla sezonu {season or 'summer'}: {soc_min}")
+        if soc_min >= soc_max:
+            raise ValueError(f"Niepoprawny zakres SOC: min={soc_min}, max={soc_max}")
+
+        controlled_soc_programs = {1, 4}
+        non_controlled_soc_programs = {2, 3, 5, 6}
+
+        for p in programs:
+            if "program" not in p or "soc" not in p:
+                raise ValueError(f"Niepoprawna struktura programu: {p}")
+            nr = int(p["program"])
+            soc = int(p["soc"])
+            if nr < 1 or nr > 6:
+                raise ValueError(f"Niepoprawny numer programu: {nr}")
+            if soc < soc_min or soc > soc_max:
+                raise ValueError(f"SOC poza zakresem {soc_min}-{soc_max} dla programu {nr}: {soc}")
+            if nr in non_controlled_soc_programs and soc != soc_min:
+                raise ValueError(f"Program {nr} nie podlega sterowaniu SOC i musi miec wartosc minimalna {soc_min}, otrzymano {soc}")
+            if nr not in controlled_soc_programs and nr not in non_controlled_soc_programs:
+                raise ValueError(f"Program {nr} nie ma zdefiniowanej polityki sterowania")
+
+        def _parse_clock(label: str, value: str) -> datetime:
+            try:
+                return datetime.strptime(value, "%H:%M:%S")
+            except Exception as exc:
+                raise ValueError(f"Niepoprawny format czasu {label}: {value} (oczekiwano HH:MM:SS)") from exc
+
+        p3 = _parse_clock("pv_start_time", plan["pv_start_time"])
+        p6 = _parse_clock("pv_end_time", plan["pv_end_time"])
+        if p6 <= p3:
+            raise ValueError(f"Niepoprawne okno PV: pv_end_time ({plan['pv_end_time']}) <= pv_start_time ({plan['pv_start_time']})")
+
+        p3_limit = datetime.strptime(f"{config.PROGRAM_3_EARLIEST_HOUR:02d}:{config.PROGRAM_3_EARLIEST_MIN:02d}:00", "%H:%M:%S")
+        p6_limit = datetime.strptime(f"{config.PROGRAM_6_EARLIEST_HOUR:02d}:{config.PROGRAM_6_EARLIEST_MIN:02d}:00", "%H:%M:%S")
+        if p3 < p3_limit:
+            raise ValueError(f"Program 3 startuje zbyt wcześnie: {plan['pv_start_time']} < {p3_limit.strftime('%H:%M:%S')}")
+        if p6 < p6_limit:
+            raise ValueError(f"Program 6 startuje zbyt wcześnie: {plan['pv_end_time']} < {p6_limit.strftime('%H:%M:%S')}")
+
+    def _send_programs_to_inverter(self, plan):
         programs = plan["programs"]
 
         pv_start = plan["pv_start_time"]
@@ -279,5 +415,3 @@ class PVPlanner(hass.Hass):
                 raise Exception(f"SOC programu {nr} nie zostal ustawiony")
 
             self.log(f"Program {nr} OK: {times[nr]} | SOC {soc}%")
-
-

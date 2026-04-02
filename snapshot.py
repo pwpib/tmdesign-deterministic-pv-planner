@@ -1,5 +1,4 @@
-print("=== SNAPSHOT FILE VERSION C ===")
-import sqlite3
+﻿import sqlite3
 import json
 from datetime import datetime
 
@@ -70,15 +69,17 @@ class SnapshotReader:
             "summer_season_active": self._to_bool("input_boolean.summer_season_active"),
 
             # --- MODEL POMPY ---
-            #"heat_pump_model": self._to_str("input_select.heat_pump_consumption_model"),
-            #"hp_power_plus_5": self._to_float("input_number.heat_pump_power_at_plus_5"),
-            #"hp_power_0": self._to_float("input_number.heat_pump_power_at_0"),
-            #"hp_power_minus_5": self._to_float("input_number.heat_pump_power_at_minus_5"),
-            #"hp_power_minus_10": self._to_float("input_number.heat_pump_power_at_minus_10"),
+            "heat_pump_model": self._to_str("input_select.pv_planner_heat_pump_consumption_model"),
+            "hp_power_plus_15": self._to_float("input_number.pv_planner_heat_pump_power_at_plus_15"),
+            "hp_power_plus_10": self._to_float("input_number.pv_planner_heat_pump_power_at_plus_10"),
+            "hp_power_plus_5": self._to_float("input_number.pv_planner_heat_pump_power_at_plus_5"),
+            "hp_power_0": self._to_float("input_number.pv_planner_heat_pump_power_at_0"),
+            "hp_power_minus_5": self._to_float("input_number.pv_planner_heat_pump_power_at_minus_5"),
+            "hp_power_minus_10": self._to_float("input_number.pv_planner_heat_pump_power_at_minus_10"),
 
             # --- PODZIAŁ ENERGII ---
-            #"energy_share_before_13": self._to_float("input_number.energy_share_before_13"),
-            #"energy_share_after_13": self._to_float("input_number.energy_share_after_13"),
+            "energy_share_before_13": self._to_float("input_number.pv_planner_pv_before_13_ratio"),
+            "energy_share_after_13": self._to_float("input_number.pv_planner_pv_after_13_ratio"),
 
             # --- MAGAZYN ---
             "battery_energy_kwh": self._to_float("input_number.inverter_battery_energy"),
@@ -89,6 +90,13 @@ class SnapshotReader:
 
             # --- PV ---
             "pv_forecast_tomorrow": self._to_float("sensor.energy_production_tomorrow"),
+            "inverter_total_production_kwh": self._to_float("sensor.inverter_total_production"),
+            "inverter_total_load_consumption_kwh": self._to_float("sensor.inverter_total_load_consumption"),
+            "inverter_total_losses_kwh": self._to_float("sensor.inverter_total_losses"),
+            "grid_import_today_kwh": self._to_float("sensor.inverter_today_energy_import"),
+            "grid_export_today_kwh": self._to_float("sensor.inverter_today_energy_export"),
+            "battery_power_w": self._to_float("sensor.inverter_battery_power"),
+            "heat_pump_power_w": self._to_float("sensor.tmdesign_kaisai_hp_electric_power"),
 
             # --- ASTRONOMIA ---
             "sun_next_dawn": self._to_str("sensor.sun_next_dawn"),

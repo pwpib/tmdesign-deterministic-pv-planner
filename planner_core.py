@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 from datetime import datetime, timedelta
 from . import config
 
@@ -19,30 +19,33 @@ def _calculate_hp_power(snapshot: dict) -> float:
     """
     Oblicza moc pompy ciepła na podstawie:
     - temperatury średniej jutro (snapshot)
-    - modelu zużycia (config)
-    - tabeli mocy w config.py
-
-    JEDYNE ŹRÓDŁO MOCY: config.py
+    - modelu zużycia (snapshot/config)
+    - tabeli mocy (snapshot/config)
     """
 
-    from . import config
-
     temp = float(snapshot["temp_avg_tomorrow"])
-    model = config.HEAT_PUMP_CONSUMPTION_MODEL
+    model = snapshot.get("heat_pump_model") or config.HEAT_PUMP_CONSUMPTION_MODEL
+
+    hp_plus_15 = float(snapshot.get("heat_pump_power_at_plus_15", config.HEAT_PUMP_POWER_AT_PLUS_15))
+    hp_plus_10 = float(snapshot.get("heat_pump_power_at_plus_10", config.HEAT_PUMP_POWER_AT_PLUS_10))
+    hp_plus_5 = float(snapshot.get("heat_pump_power_at_plus_5", config.HEAT_PUMP_POWER_AT_PLUS_5))
+    hp_0 = float(snapshot.get("heat_pump_power_at_0", config.HEAT_PUMP_POWER_AT_0))
+    hp_minus_5 = float(snapshot.get("heat_pump_power_at_minus_5", config.HEAT_PUMP_POWER_AT_MINUS_5))
+    hp_minus_10 = float(snapshot.get("heat_pump_power_at_minus_10", config.HEAT_PUMP_POWER_AT_MINUS_10))
 
     # --- wybór mocy bazowej zależnej od temperatury ---
     if temp >= 15:
-        base_power = config.HEAT_PUMP_POWER_AT_PLUS_15
+        base_power = hp_plus_15
     elif temp >= 10:
-        base_power = config.HEAT_PUMP_POWER_AT_PLUS_10
+        base_power = hp_plus_10
     elif temp >= 5:
-        base_power = config.HEAT_PUMP_POWER_AT_PLUS_5
+        base_power = hp_plus_5
     elif temp >= 0:
-        base_power = config.HEAT_PUMP_POWER_AT_0
+        base_power = hp_0
     elif temp >= -5:
-        base_power = config.HEAT_PUMP_POWER_AT_MINUS_5
+        base_power = hp_minus_5
     else:
-        base_power = config.HEAT_PUMP_POWER_AT_MINUS_10
+        base_power = hp_minus_10
 
     # --- modyfikator modelu ---
     if model == "Eco":
@@ -64,14 +67,22 @@ def run(snapshot: dict) -> dict:
     log.info(f"DEBUG dusk raw: {snapshot['sun_next_dusk']}")
     log.info(f"DEBUG plan_date: {snapshot['plan_date']}")
 
-
     _validate_snapshot(snapshot)
 
     capacity = float(snapshot["battery_capacity_kwh"])
     soc_max = float(snapshot["battery_soc_max"])
 
     # ---- sezon ----
-    if snapshot["temp_avg_tomorrow"] <= snapshot["season_temperature_threshold"]:
+    heating_active = snapshot.get("heating_season_active")
+    summer_active = snapshot.get("summer_season_active")
+
+    if heating_active is True:
+        soc_min = float(snapshot["battery_soc_min_winter"])
+        season = "winter"
+    elif summer_active is True:
+        soc_min = float(snapshot["battery_soc_min_summer"])
+        season = "summer"
+    elif snapshot["temp_avg_tomorrow"] <= snapshot["season_temperature_threshold"]:
         soc_min = float(snapshot["battery_soc_min_winter"])
         season = "winter"
     else:
@@ -87,8 +98,8 @@ def run(snapshot: dict) -> dict:
     log.info(f"DEBUG capacity: {capacity} kWh")
 
     PV_total = float(snapshot["pv_forecast_tomorrow"])
-
-    from . import config
+    pv_before_13_ratio = float(snapshot.get("energy_share_before_13", config.PV_BEFORE_13_RATIO))
+    pv_after_13_ratio = float(snapshot.get("energy_share_after_13", config.PV_AFTER_13_RATIO))
 
     hp_power = _calculate_hp_power(snapshot)
 
@@ -130,23 +141,8 @@ def run(snapshot: dict) -> dict:
         pv_end = t15_limit
 
     # Obliczenie czasu produkcji PV w godzinach (ze ułamkami minut)
-    # pv_hours_before_13 = 13.0 - pv_start.hour - pv_start.minute / 60.0
-    # pv_hours_after_13 = pv_end.hour + pv_end.minute / 60.0 - 13.0
-
-    # Nowy zmieniony kod - powyższy zakomentowano
-
-    t13 = datetime.combine(plan_date, datetime.min.time()).replace(hour=13)
-
-    pv_hours_before_13 = max(
-        0.0,
-        (min(pv_end, t13) - pv_start).total_seconds() / 3600.0
-    )
-
-    pv_hours_after_13 = max(
-        0.0,
-        (pv_end - max(pv_start, t13)).total_seconds() / 3600.0
-    )
-
+    pv_hours_before_13 = 13.0 - pv_start.hour - pv_start.minute / 60.0
+    pv_hours_after_13 = pv_end.hour + pv_end.minute / 60.0 - 13.0
 
     energy = E  # energia startowa (SOC_now)
     soc_min_kwh_local = soc_min_kwh
@@ -163,9 +159,9 @@ def run(snapshot: dict) -> dict:
             pv_kw = 0.0
         else:
             if current_time.hour < 13:
-                pv_kw = (PV_total * PV_BEFORE_13_RATIO) / max(1.0, pv_hours_before_13)
+                pv_kw = (PV_total * pv_before_13_ratio) / max(1.0, pv_hours_before_13)
             else:
-                pv_kw = (PV_total * PV_AFTER_13_RATIO) / max(1.0, pv_hours_after_13)
+                pv_kw = (PV_total * pv_after_13_ratio) / max(1.0, pv_hours_after_13)
 
         load_kw = house_kw + hp_power
         energy = energy + pv_kw - load_kw
@@ -198,7 +194,7 @@ def run(snapshot: dict) -> dict:
             if current_time < pv_start or current_time >= pv_end:
                 pv_kw = 0.0
             else:
-                pv_kw = (PV_total * PV_BEFORE_13_RATIO) / max(1.0, pv_hours_before_13)
+                pv_kw = (PV_total * pv_before_13_ratio) / max(1.0, pv_hours_before_13)
 
             load_kw = house_kw + hp_power
             energy += pv_kw - load_kw
@@ -260,8 +256,13 @@ def run(snapshot: dict) -> dict:
     if SOC_13 is None:
         SOC_13 = int(soc_max)
 
+    learning_bias = float(getattr(config, "LEARNING_SOC_TARGET_BIAS", 0.0))
+    SOC_13 = int(round(SOC_13 + learning_bias))
+    SOC_13 = max(int(soc_min), min(int(soc_max), SOC_13))
+
     log.info(f"SOC_06 target: {SOC_06}%")
     log.info(f"SOC_13 target: {SOC_13}%")
+    log.info(f"Learning SOC bias: {learning_bias:+.2f} pp")
 
     programs = [
         {"program": 1, "soc": SOC_06},
@@ -282,6 +283,7 @@ def run(snapshot: dict) -> dict:
         "pv_start_time": pv_start.strftime("%H:%M:%S"),
         "pv_end_time": pv_end.strftime("%H:%M:%S"),
         "target_soc_percent": SOC_13,
+        "learning_soc_target_bias": learning_bias,
         "night_charge_kwh": 0.0,
         "midday_charge_kwh": 0.0
 

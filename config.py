@@ -1,4 +1,4 @@
-"""
+﻿"""
 PV Planner Configuration
 Parametry globalne systemu optymalizacji baterii
 """
@@ -57,10 +57,10 @@ HOUSE_LOAD_PROFILE = {
 # ==========================================================
 # Okresy taniej taryfy (domyślnie: noc + midday)
 
-#CHEAP_TARIFF_WINDOWS = [
-#    (22, 6),      # 22:00–06:00 (noc)
-#    (13, 15),     # 13:00–15:00 (midday)
-#]
+CHEAP_TARIFF_WINDOWS = [
+    (22, 6),      # 22:00–06:00 (noc)
+    (13, 15),     # 13:00–15:00 (midday)
+]
 
 
 # ==========================================================
@@ -76,6 +76,13 @@ HEAT_PUMP_POWER_AT_MINUS_5 = 1.0   # kW @ -5°C
 HEAT_PUMP_POWER_AT_MINUS_10 = 1.0  # kW @ -10°C
 HEAT_PUMP_CONSUMPTION_MODEL = "Standard"  # Standard / Premium / Eco
 HEATING_SEASON_ACTIVE = True       # Czy sezon grzewczy jest aktywny
+
+# ==========================================================
+# PARAMETRY UCZENIA (ADAPTACJA PLANU)
+# ==========================================================
+# Korekta celu SOC (w punktach procentowych) wyliczana z walidacji
+# plan vs rzeczywistość. Aktualizowana automatycznie i utrwalana w DB.
+LEARNING_SOC_TARGET_BIAS = 0.0
 
 
 # ==========================================================
@@ -110,4 +117,3 @@ def is_cheap_tariff(hour: int) -> bool:
             if hour >= start or hour < end:
                 return True
     return False
-
