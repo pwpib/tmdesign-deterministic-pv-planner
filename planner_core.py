@@ -130,8 +130,23 @@ def run(snapshot: dict) -> dict:
         pv_end = t15_limit
 
     # Obliczenie czasu produkcji PV w godzinach (ze ułamkami minut)
-    pv_hours_before_13 = 13.0 - pv_start.hour - pv_start.minute / 60.0
-    pv_hours_after_13 = pv_end.hour + pv_end.minute / 60.0 - 13.0
+    # pv_hours_before_13 = 13.0 - pv_start.hour - pv_start.minute / 60.0
+    # pv_hours_after_13 = pv_end.hour + pv_end.minute / 60.0 - 13.0
+
+    # Nowy zmieniony kod - powyższy zakomentowano
+
+    t13 = datetime.combine(plan_date, datetime.min.time()).replace(hour=13)
+
+    pv_hours_before_13 = max(
+        0.0,
+        (min(pv_end, t13) - pv_start).total_seconds() / 3600.0
+    )
+
+    pv_hours_after_13 = max(
+        0.0,
+        (pv_end - max(pv_start, t13)).total_seconds() / 3600.0
+    )
+
 
     energy = E  # energia startowa (SOC_now)
     soc_min_kwh_local = soc_min_kwh
